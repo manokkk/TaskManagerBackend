@@ -1,4 +1,4 @@
-import express from "express";
+import express, { Request, Response } from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import tasksRouter from "./routes/tasks";
@@ -12,16 +12,19 @@ app.use(cors());
 app.use(express.json());
 
 // Health check endpoint
-app.get("/api/health", (_req, res) => {
-  res.json({ status: "ok", timestamp: new Date().toISOString() });
+app.get("/api/health", (_req: Request, res: Response) => {
+  res.json({
+    status: "ok",
+    engine: "Galaxy RPG Authoritative Backend",
+    timestamp: new Date().toISOString(),
+  });
 });
 
-// Tasks CRUD API
+// Authoritative Tasks & Gamification Engine API
 app.use("/api/tasks", tasksRouter);
 
 app.listen(PORT, () => {
-  console.log(`🚀 Task Manager Backend is running on http://localhost:${PORT}`);
+  console.log(`🚀 Galaxy RPG Backend running on http://localhost:${PORT}`);
   console.log(`📡 Health Check: http://localhost:${PORT}/api/health`);
-  console.log(`📋 Tasks API: http://localhost:${PORT}/api/tasks`);
+  console.log(`📋 Authoritative Tasks & EXP API: http://localhost:${PORT}/api/tasks`);
 });
-

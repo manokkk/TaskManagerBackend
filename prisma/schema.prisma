@@ -8,13 +8,20 @@ generator client {
 }
 
 model Task {
-  id          Int       @id @default(autoincrement())
-  title       String
-  description String?
-  status      String    @default("pending") // pending | in_progress | completed
-  priority    String    @default("medium")  // low | medium | high
-  dueDate     DateTime?
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
+  id             String   @id @default(uuid())
+  title          String
+  description    String?
+  category       String   @default("Daily")   // Daily | Weekly | Monthly
+  status         String   @default("Pending") // Pending | Done
+  scheduledAt    DateTime
+  notificationId String?
+  expReward      Int      @default(30)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 }
 
+model UserProfile {
+  id        Int      @id @default(1)
+  totalExp  Int      @default(0)
+  updatedAt DateTime @updatedAt
+}
