@@ -2,6 +2,7 @@ import {
   CreateTaskPayload,
   GalaxyStateResponse,
   Task,
+  TaskCategory,
   TaskStatus,
   UpdateTaskPayload,
 } from "../types/galaxy";
@@ -10,65 +11,99 @@ import {
   getAuthoritativeExpReward,
   getGamificationMetadata,
 } from "./gamificationEngine";
+import { prisma } from "../prisma";
 
-const now = Date.now();
-
-const INITIAL_BACKEND_TASKS: Task[] = [
+const INITIAL_BACKEND_TASKS = [
   {
-    id: "mission-daily-1",
     title: "Complete 45-Minute Deep Work Sprint",
     description: "Zero distractions in the command deck. Ship core module architecture.",
     category: "Daily",
     status: "Pending",
-    scheduledAt: new Date(now + 2 * 60 * 60 * 1000).toISOString(),
-    notificationId: null,
+    scheduledAt: new Date(Date.now() + 2 * 60 * 60 * 1000),
     expReward: getAuthoritativeExpReward("Daily"),
-    createdAt: new Date(now - 3600000).toISOString(),
-    updatedAt: new Date(now - 3600000).toISOString(),
   },
   {
-    id: "mission-weekly-1",
     title: "Weekly Systems & Codebase Audit",
     description: "Review PRs, verify notification triggers, and benchmark performance.",
     category: "Weekly",
     status: "Pending",
-    scheduledAt: new Date(now + 24 * 60 * 60 * 1000).toISOString(),
-    notificationId: null,
+    scheduledAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
     expReward: getAuthoritativeExpReward("Weekly"),
-    createdAt: new Date(now - 7200000).toISOString(),
-    updatedAt: new Date(now - 7200000).toISOString(),
   },
   {
-    id: "mission-monthly-1",
     title: "Monthly Milestone & Architecture Retrospective",
     description: "Evaluate monthly sprint velocity and calibrate next cycle objectives.",
     category: "Monthly",
     status: "Done",
-    scheduledAt: new Date(now - 12 * 60 * 60 * 1000).toISOString(),
-    notificationId: null,
+    scheduledAt: new Date(Date.now() - 12 * 60 * 60 * 1000),
     expReward: getAuthoritativeExpReward("Monthly"),
-    createdAt: new Date(now - 86400000).toISOString(),
-    updatedAt: new Date(now - 3600000).toISOString(),
   },
 ];
 
-let serverTasks: Task[] = [...INITIAL_BACKEND_TASKS];
-let serverTotalExp: number = serverTasks.reduce(
-  (sum, t) => (t.status === "Done" ? sum + t.expReward : sum),
-  0
-);
-
-// Per-task mutex on the backend to serialize rapid toggle/update requests
-const taskOperationLocks = new Set<string>();
+let seeded = false;
+async function ensureSeedData() {
+  if (seeded) return;
+  try {
+    const count = await prisma.task.count();
+    if (count === 0) {
+      console.log("🌱 Seeding initial missions to Supabase Task table...");
+      for (const t of INITIAL_BACKEND_TASKS) {
+        await prisma.task.create({ data: t });
+      }
+    }
+    seeded = true;
+  } catch (err) {
+    console.error("Warning: could not verify seed data in Supabase:", err);
+  }
+}
 
 export interface TaskQueryFilter {
   category?: string;
   status?: string;
   search?: string;
+  userId?: string;
 }
 
-function buildAuthoritativeState(filter?: TaskQueryFilter): GalaxyStateResponse {
-  let filtered = [...serverTasks];
+function mapPrismaTask(t: any): Task {
+  return {
+    id: t.id,
+    title: t.title,
+    description: t.description ?? undefined,
+    category: t.category as TaskCategory,
+    status: t.status as TaskStatus,
+    scheduledAt: t.scheduledAt instanceof Date ? t.scheduledAt.toISOString() : new Date(t.scheduledAt).toISOString(),
+    notificationId: t.notificationId,
+    expReward: t.expReward,
+    createdAt: t.createdAt instanceof Date ? t.createdAt.toISOString() : new Date(t.createdAt).toISOString(),
+    updatedAt: t.updatedAt instanceof Date ? t.updatedAt.toISOString() : new Date(t.updatedAt).toISOString(),
+  };
+}
+
+async function buildAuthoritativeState(filter?: TaskQueryFilter): Promise<GalaxyStateResponse> {
+  await ensureSeedData();
+
+  // Fetch all tasks to compute authoritative counts and global EXP
+  const allTasks = await prisma.task.findMany({
+    orderBy: { createdAt: "desc" },
+  });
+
+  const totalExp = allTasks.reduce(
+    (sum, t) => (t.status === "Done" ? sum + t.expReward : sum),
+    0
+  );
+
+  const counts = {
+    All: allTasks.length,
+    Daily: allTasks.filter((t) => t.category === "Daily").length,
+    Weekly: allTasks.filter((t) => t.category === "Weekly").length,
+    Monthly: allTasks.filter((t) => t.category === "Monthly").length,
+    Note: allTasks.filter((t) => t.category === "Note").length,
+    Completed: allTasks.filter((t) => t.status === "Done").length,
+    Total: allTasks.length,
+  };
+
+  // Build filtered list for the client view
+  let filtered = allTasks;
 
   if (filter?.category && filter.category !== "All") {
     filtered = filtered.filter((t) => t.category === filter.category);
@@ -87,180 +122,129 @@ function buildAuthoritativeState(filter?: TaskQueryFilter): GalaxyStateResponse 
     );
   }
 
-  const counts = {
-    All: serverTasks.length,
-    Daily: serverTasks.filter((t) => t.category === "Daily").length,
-    Weekly: serverTasks.filter((t) => t.category === "Weekly").length,
-    Monthly: serverTasks.filter((t) => t.category === "Monthly").length,
-    Completed: serverTasks.filter((t) => t.status === "Done").length,
-    Total: serverTasks.length,
-  };
-
   return {
-    tasks: filtered,
+    tasks: filtered.map(mapPrismaTask),
     counts,
-    progress: calculateAuthoritativeProgress(serverTotalExp),
+    progress: calculateAuthoritativeProgress(totalExp),
     metadata: getGamificationMetadata(),
   };
 }
 
 export const taskStore = {
-  getState(filter?: TaskQueryFilter): GalaxyStateResponse {
-    return buildAuthoritativeState(filter);
+  async getState(filter?: TaskQueryFilter): Promise<GalaxyStateResponse> {
+    return await buildAuthoritativeState(filter);
   },
 
-  getTaskById(id: string): Task | undefined {
-    return serverTasks.find((t) => t.id === id);
+  async getTaskById(id: string): Promise<Task | null> {
+    const task = await prisma.task.findUnique({ where: { id } });
+    return task ? mapPrismaTask(task) : null;
   },
 
-  createTask(
+  async createTask(
     payload: CreateTaskPayload,
     filter?: TaskQueryFilter
-  ): { task: Task; state: GalaxyStateResponse } {
-    const nowIso = new Date().toISOString();
+  ): Promise<{ task: Task; state: GalaxyStateResponse }> {
     const expReward = getAuthoritativeExpReward(payload.category);
 
-    const newTask: Task = {
-      id: `mission-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-      title: payload.title.trim(),
-      description: payload.description?.trim() || undefined,
-      category: payload.category,
-      status: "Pending",
-      scheduledAt: payload.scheduledAt,
-      notificationId: null,
-      expReward,
-      createdAt: nowIso,
-      updatedAt: nowIso,
-    };
+    const created = await prisma.task.create({
+      data: {
+        title: payload.title.trim(),
+        description: payload.description?.trim() || null,
+        category: payload.category,
+        status: "Pending",
+        scheduledAt: new Date(payload.scheduledAt),
+        expReward,
+      },
+    });
 
-    serverTasks = [newTask, ...serverTasks];
+    const state = await buildAuthoritativeState(filter);
     return {
-      task: newTask,
-      state: buildAuthoritativeState(filter),
+      task: mapPrismaTask(created),
+      state,
     };
   },
 
-  updateTask(
+  async updateTask(
     id: string,
     payload: UpdateTaskPayload,
     filter?: TaskQueryFilter
-  ): { task: Task; state: GalaxyStateResponse } {
-    if (taskOperationLocks.has(id)) {
-      throw new Error("TASK_LOCKED");
+  ): Promise<{ task: Task; state: GalaxyStateResponse }> {
+    const existing = await prisma.task.findUnique({ where: { id } });
+    if (!existing) {
+      throw new Error("TASK_NOT_FOUND");
     }
 
-    taskOperationLocks.add(id);
-    try {
-      const idx = serverTasks.findIndex((t) => t.id === id);
-      if (idx === -1) {
-        throw new Error("TASK_NOT_FOUND");
-      }
+    const nextCategory = payload.category ?? (existing.category as TaskCategory);
+    const nextExpReward = getAuthoritativeExpReward(nextCategory);
 
-      const existing = serverTasks[idx];
-      const nextCategory = payload.category ?? existing.category;
-      const nextExpReward = getAuthoritativeExpReward(nextCategory);
-
-      // Reconcile serverTotalExp if a completed task's category changed
-      if (existing.status === "Done" && existing.expReward !== nextExpReward) {
-        serverTotalExp = Math.max(
-          0,
-          serverTotalExp + (nextExpReward - existing.expReward)
-        );
-      }
-
-      const updated: Task = {
-        ...existing,
-        title:
-          payload.title !== undefined ? payload.title.trim() : existing.title,
-        description:
-          payload.description !== undefined
-            ? payload.description.trim() || undefined
-            : existing.description,
-        category: nextCategory,
-        scheduledAt: payload.scheduledAt ?? existing.scheduledAt,
-        notificationId:
-          payload.notificationId !== undefined
-            ? payload.notificationId
-            : existing.notificationId,
+    const updated = await prisma.task.update({
+      where: { id },
+      data: {
+        ...(payload.title !== undefined && { title: payload.title.trim() }),
+        ...(payload.description !== undefined && {
+          description: payload.description.trim() || null,
+        }),
+        ...(payload.category !== undefined && { category: payload.category }),
+        ...(payload.scheduledAt !== undefined && {
+          scheduledAt: new Date(payload.scheduledAt),
+        }),
+        ...(payload.notificationId !== undefined && {
+          notificationId: payload.notificationId,
+        }),
         expReward: nextExpReward,
-        updatedAt: new Date().toISOString(),
-      };
+      },
+    });
 
-      serverTasks[idx] = updated;
-      return {
-        task: updated,
-        state: buildAuthoritativeState(filter),
-      };
-    } finally {
-      taskOperationLocks.delete(id);
-    }
+    const state = await buildAuthoritativeState(filter);
+    return {
+      task: mapPrismaTask(updated),
+      state,
+    };
   },
 
-  toggleTaskStatus(
+  async toggleTaskStatus(
     id: string,
     filter?: TaskQueryFilter
-  ): { task: Task; state: GalaxyStateResponse } {
-    if (taskOperationLocks.has(id)) {
-      throw new Error("TASK_LOCKED");
+  ): Promise<{ task: Task; state: GalaxyStateResponse }> {
+    const existing = await prisma.task.findUnique({ where: { id } });
+    if (!existing) {
+      throw new Error("TASK_NOT_FOUND");
     }
 
-    taskOperationLocks.add(id);
-    try {
-      const idx = serverTasks.findIndex((t) => t.id === id);
-      if (idx === -1) {
-        throw new Error("TASK_NOT_FOUND");
-      }
+    const nextStatus = existing.status === "Pending" ? "Done" : "Pending";
+    const authoritativeReward = getAuthoritativeExpReward(existing.category as TaskCategory);
 
-      const existing = serverTasks[idx];
-      const nextStatus: TaskStatus =
-        existing.status === "Pending" ? "Done" : "Pending";
-      const authoritativeReward = getAuthoritativeExpReward(existing.category);
-      const expDelta =
-        nextStatus === "Done" ? authoritativeReward : -authoritativeReward;
-
-      serverTotalExp = Math.max(0, serverTotalExp + expDelta);
-
-      const updated: Task = {
-        ...existing,
+    const updated = await prisma.task.update({
+      where: { id },
+      data: {
         status: nextStatus,
         expReward: authoritativeReward,
         notificationId: nextStatus === "Done" ? null : existing.notificationId,
-        updatedAt: new Date().toISOString(),
-      };
+      },
+    });
 
-      serverTasks[idx] = updated;
-      return {
-        task: updated,
-        state: buildAuthoritativeState(filter),
-      };
-    } finally {
-      taskOperationLocks.delete(id);
-    }
+    const state = await buildAuthoritativeState(filter);
+    return {
+      task: mapPrismaTask(updated),
+      state,
+    };
   },
 
-  deleteTask(
+  async deleteTask(
     id: string,
     filter?: TaskQueryFilter
-  ): { deletedTask: Task; state: GalaxyStateResponse } {
-    if (taskOperationLocks.has(id)) {
-      throw new Error("TASK_LOCKED");
+  ): Promise<{ deletedTask: Task; state: GalaxyStateResponse }> {
+    const existing = await prisma.task.findUnique({ where: { id } });
+    if (!existing) {
+      throw new Error("TASK_NOT_FOUND");
     }
 
-    taskOperationLocks.add(id);
-    try {
-      const existing = serverTasks.find((t) => t.id === id);
-      if (!existing) {
-        throw new Error("TASK_NOT_FOUND");
-      }
+    await prisma.task.delete({ where: { id } });
 
-      serverTasks = serverTasks.filter((t) => t.id !== id);
-      return {
-        deletedTask: existing,
-        state: buildAuthoritativeState(filter),
-      };
-    } finally {
-      taskOperationLocks.delete(id);
-    }
+    const state = await buildAuthoritativeState(filter);
+    return {
+      deletedTask: mapPrismaTask(existing),
+      state,
+    };
   },
 };
-

@@ -1,4 +1,4 @@
-export type TaskCategory = "Daily" | "Weekly" | "Monthly";
+export type TaskCategory = "Daily" | "Weekly" | "Monthly" | "Note";
 export type TaskStatus = "Pending" | "Done";
 export type RankTier = "Rookie" | "Veteran" | "Elite" | "Master" | "Legendary";
 
@@ -66,6 +66,7 @@ export interface GalaxyStateResponse {
     Daily: number;
     Weekly: number;
     Monthly: number;
+    Note: number;
     Completed: number;
     Total: number;
   };

@@ -13,19 +13,19 @@ function extractFilter(req: Request): TaskQueryFilter {
   };
 }
 
-// GET /api/tasks — Returns authoritative tasks, counts, RPG progress, and gamification metadata
-router.get("/", (req: Request, res: Response): void => {
+// GET /api/tasks — Returns authoritative tasks from Supabase, counts, and RPG progress
+router.get("/", async (req: Request, res: Response): Promise<void> => {
   try {
-    const state = taskStore.getState(extractFilter(req));
+    const state = await taskStore.getState(extractFilter(req));
     res.json(state);
   } catch (error) {
-    console.error("Error fetching authoritative galaxy state:", error);
+    console.error("Error fetching authoritative galaxy state from Supabase:", error);
     res.status(500).json({ error: "Failed to fetch galaxy state" });
   }
 });
 
-// POST /api/tasks — Validates input & assigns EXP reward strictly on the backend
-router.post("/", (req: Request, res: Response): void => {
+// POST /api/tasks — Validates input & saves directly to Supabase with server-calculated EXP
+router.post("/", async (req: Request, res: Response): Promise<void> => {
   try {
     const { title, description, category, scheduledAt } = req.body;
 
@@ -36,18 +36,22 @@ router.post("/", (req: Request, res: Response): void => {
 
     if (!isValidCategory(category)) {
       res.status(400).json({
-        error: "Category must be strictly 'Daily', 'Weekly', or 'Monthly'.",
+        error: "Category must be strictly 'Daily', 'Weekly', 'Monthly', or 'Note'.",
       });
       return;
     }
 
-    const parsedSchedule = new Date(scheduledAt);
+    let parsedSchedule = new Date(scheduledAt);
     if (!scheduledAt || isNaN(parsedSchedule.getTime())) {
-      res.status(400).json({ error: "A valid target Date & Time is required." });
-      return;
+      if (category === "Note") {
+        parsedSchedule = new Date();
+      } else {
+        res.status(400).json({ error: "A valid target Date & Time is required." });
+        return;
+      }
     }
 
-    const result = taskStore.createTask(
+    const result = await taskStore.createTask(
       {
         title,
         description: typeof description === "string" ? description : undefined,
@@ -59,13 +63,13 @@ router.post("/", (req: Request, res: Response): void => {
 
     res.status(201).json(result);
   } catch (error) {
-    console.error("Error creating task:", error);
+    console.error("Error creating task in Supabase:", error);
     res.status(500).json({ error: "Failed to create task" });
   }
 });
 
-// PUT /api/tasks/:id — Updates task parameters & recalculates EXP on the server
-router.put("/:id", (req: Request, res: Response): void => {
+// PUT /api/tasks/:id — Updates task in Supabase & recalculates authoritative EXP on server
+router.put("/:id", async (req: Request, res: Response): Promise<void> => {
   try {
     const id = String(req.params.id);
     const { title, description, category, scheduledAt, notificationId } =
@@ -93,7 +97,7 @@ router.put("/:id", (req: Request, res: Response): void => {
       normalizedSchedule = parsed.toISOString();
     }
 
-    const result = taskStore.updateTask(
+    const result = await taskStore.updateTask(
       id,
       {
         title,
@@ -109,43 +113,35 @@ router.put("/:id", (req: Request, res: Response): void => {
   } catch (error: unknown) {
     const msg = error instanceof Error ? error.message : "UNKNOWN";
     if (msg === "TASK_NOT_FOUND") {
-      res.status(404).json({ error: "Task not found" });
+      res.status(404).json({ error: "Task not found in Supabase" });
       return;
     }
-    if (msg === "TASK_LOCKED") {
-      res.status(409).json({ error: "Task is currently being processed" });
-      return;
-    }
-    res.status(500).json({ error: "Failed to update task" });
+    res.status(500).json({ error: "Failed to update task in Supabase" });
   }
 });
 
-// PATCH /api/tasks/:id/toggle — Server-authoritative status toggle & EXP/Level calculation
-router.patch("/:id/toggle", (req: Request, res: Response): void => {
+// PATCH /api/tasks/:id/toggle — Server-authoritative status toggle & EXP/Level calculation in Supabase
+router.patch("/:id/toggle", async (req: Request, res: Response): Promise<void> => {
   try {
     const id = String(req.params.id);
-    const result = taskStore.toggleTaskStatus(id, extractFilter(req));
+    const result = await taskStore.toggleTaskStatus(id, extractFilter(req));
     res.json(result);
   } catch (error: unknown) {
     const msg = error instanceof Error ? error.message : "UNKNOWN";
     if (msg === "TASK_NOT_FOUND") {
-      res.status(404).json({ error: "Task not found" });
-      return;
-    }
-    if (msg === "TASK_LOCKED") {
-      res.status(409).json({ error: "Task toggle already in progress" });
+      res.status(404).json({ error: "Task not found in Supabase" });
       return;
     }
     res.status(500).json({ error: "Failed to toggle task status" });
   }
 });
 
-// PATCH /api/tasks/:id/notification — Registers the device's OS notification ID
-router.patch("/:id/notification", (req: Request, res: Response): void => {
+// PATCH /api/tasks/:id/notification — Registers the device's OS notification ID in Supabase
+router.patch("/:id/notification", async (req: Request, res: Response): Promise<void> => {
   try {
     const id = String(req.params.id);
     const { notificationId } = req.body;
-    const result = taskStore.updateTask(
+    const result = await taskStore.updateTask(
       id,
       { notificationId: notificationId ?? null },
       extractFilter(req)
@@ -154,26 +150,26 @@ router.patch("/:id/notification", (req: Request, res: Response): void => {
   } catch (error: unknown) {
     const msg = error instanceof Error ? error.message : "UNKNOWN";
     if (msg === "TASK_NOT_FOUND") {
-      res.status(404).json({ error: "Task not found" });
+      res.status(404).json({ error: "Task not found in Supabase" });
       return;
     }
     res.status(500).json({ error: "Failed to update notification reference" });
   }
 });
 
-// DELETE /api/tasks/:id — Deletes task on the server
-router.delete("/:id", (req: Request, res: Response): void => {
+// DELETE /api/tasks/:id — Deletes task permanently from Supabase
+router.delete("/:id", async (req: Request, res: Response): Promise<void> => {
   try {
     const id = String(req.params.id);
-    const result = taskStore.deleteTask(id, extractFilter(req));
+    const result = await taskStore.deleteTask(id, extractFilter(req));
     res.json(result);
   } catch (error: unknown) {
     const msg = error instanceof Error ? error.message : "UNKNOWN";
     if (msg === "TASK_NOT_FOUND") {
-      res.status(404).json({ error: "Task not found" });
+      res.status(404).json({ error: "Task not found in Supabase" });
       return;
     }
-    res.status(500).json({ error: "Failed to delete task" });
+    res.status(500).json({ error: "Failed to delete task from Supabase" });
   }
 });
 

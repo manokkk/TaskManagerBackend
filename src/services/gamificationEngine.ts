@@ -11,6 +11,7 @@ export const EXP_REWARDS: Readonly<Record<TaskCategory, number>> = {
   Daily: 30,
   Weekly: 20,
   Monthly: 10,
+  Note: 0,
 };
 
 export const BASE_LEVEL_CAP = 100;
@@ -80,7 +81,12 @@ export function getRankForLevel(level: number): RankTier {
 }
 
 export function isValidCategory(value: unknown): value is TaskCategory {
-  return value === "Daily" || value === "Weekly" || value === "Monthly";
+  return (
+    value === "Daily" ||
+    value === "Weekly" ||
+    value === "Monthly" ||
+    value === "Note"
+  );
 }
 
 export function getAuthoritativeExpReward(category: TaskCategory): number {
