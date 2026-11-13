@@ -57,11 +57,11 @@ router.post("/register", async (req: Request, res: Response): Promise<void> => {
       },
     });
 
-    // Generate JWT token
+    // Generate JWT token (valid for 7 days)
     const token = jwt.sign(
       { userId: user.id, email: user.email },
       JWT_SECRET,
-      { expiresIn: "30d" }
+      { expiresIn: "7d" }
     );
 
     res.status(201).json({
@@ -104,11 +104,11 @@ router.post("/login", async (req: Request, res: Response): Promise<void> => {
       return;
     }
 
-    // Generate JWT token
+    // Generate JWT token (valid for 7 days)
     const token = jwt.sign(
       { userId: user.id, email: user.email },
       JWT_SECRET,
-      { expiresIn: "30d" }
+      { expiresIn: "7d" }
     );
 
     res.json({

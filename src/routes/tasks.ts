@@ -41,14 +41,20 @@ router.post("/", async (req: Request, res: Response): Promise<void> => {
       return;
     }
 
-    let parsedSchedule = new Date(scheduledAt);
+    let parsedSchedule = scheduledAt ? new Date(scheduledAt) : new Date(NaN);
     if (!scheduledAt || isNaN(parsedSchedule.getTime())) {
-      if (category === "Note") {
-        parsedSchedule = new Date();
-      } else {
-        res.status(400).json({ error: "A valid target Date & Time is required." });
-        return;
+      const target = new Date();
+      if (category === "Daily") {
+        target.setDate(target.getDate() + 1);
+        target.setHours(0, 0, 0, 0);
+      } else if (category === "Weekly") {
+        target.setDate(target.getDate() + 7);
+        target.setHours(0, 0, 0, 0);
+      } else if (category === "Monthly") {
+        target.setMonth(target.getMonth() + 1);
+        target.setHours(0, 0, 0, 0);
       }
+      parsedSchedule = target;
     }
 
     const result = await taskStore.createTask(
