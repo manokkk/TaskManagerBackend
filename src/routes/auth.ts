@@ -2,9 +2,9 @@ import { Router, Request, Response } from "express";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { prisma } from "../prisma";
+import { getJwtSecret } from "../middleware/auth";
 
 const router = Router();
-const JWT_SECRET = process.env.JWT_SECRET || "galaxy-quest-rpg-super-secret-jwt-key-2026";
 
 // POST /api/auth/register — Register new Commander
 router.post("/register", async (req: Request, res: Response): Promise<void> => {
@@ -60,7 +60,7 @@ router.post("/register", async (req: Request, res: Response): Promise<void> => {
     // Generate JWT token (valid for 7 days)
     const token = jwt.sign(
       { userId: user.id, email: user.email },
-      JWT_SECRET,
+      getJwtSecret(),
       { expiresIn: "7d" }
     );
 
@@ -107,7 +107,7 @@ router.post("/login", async (req: Request, res: Response): Promise<void> => {
     // Generate JWT token (valid for 7 days)
     const token = jwt.sign(
       { userId: user.id, email: user.email },
-      JWT_SECRET,
+      getJwtSecret(),
       { expiresIn: "7d" }
     );
 
@@ -138,7 +138,7 @@ router.get("/me", async (req: Request, res: Response): Promise<void> => {
     }
 
     const token = authHeader.split(" ")[1];
-    const decoded = jwt.verify(token, JWT_SECRET) as { userId: string };
+    const decoded = jwt.verify(token, getJwtSecret()) as { userId: string };
 
     const user = await prisma.user.findUnique({
       where: { id: decoded.userId },

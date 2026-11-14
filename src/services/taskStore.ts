@@ -13,55 +13,10 @@ import {
 } from "./gamificationEngine";
 import { prisma } from "../prisma";
 
-const INITIAL_BACKEND_TASKS = [
-  {
-    title: "Complete 45-Minute Deep Work Sprint",
-    description: "Zero distractions in the command deck. Ship core module architecture.",
-    category: "Daily",
-    status: "Pending",
-    scheduledAt: new Date(Date.now() + 2 * 60 * 60 * 1000),
-    expReward: getAuthoritativeExpReward("Daily"),
-  },
-  {
-    title: "Weekly Systems & Codebase Audit",
-    description: "Review PRs, verify notification triggers, and benchmark performance.",
-    category: "Weekly",
-    status: "Pending",
-    scheduledAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
-    expReward: getAuthoritativeExpReward("Weekly"),
-  },
-  {
-    title: "Monthly Milestone & Architecture Retrospective",
-    description: "Evaluate monthly sprint velocity and calibrate next cycle objectives.",
-    category: "Monthly",
-    status: "Done",
-    scheduledAt: new Date(Date.now() - 12 * 60 * 60 * 1000),
-    expReward: getAuthoritativeExpReward("Monthly"),
-  },
-];
-
-let seeded = false;
-async function ensureSeedData() {
-  if (seeded) return;
-  try {
-    const count = await prisma.task.count();
-    if (count === 0) {
-      console.log("🌱 Seeding initial missions to Supabase Task table...");
-      for (const t of INITIAL_BACKEND_TASKS) {
-        await prisma.task.create({ data: t });
-      }
-    }
-    seeded = true;
-  } catch (err) {
-    console.error("Warning: could not verify seed data in Supabase:", err);
-  }
-}
-
 export interface TaskQueryFilter {
   category?: string;
   status?: string;
   search?: string;
-  userId?: string;
 }
 
 function mapPrismaTask(t: any): Task {
@@ -71,26 +26,40 @@ function mapPrismaTask(t: any): Task {
     description: t.description ?? undefined,
     category: t.category as TaskCategory,
     status: t.status as TaskStatus,
-    scheduledAt: t.scheduledAt instanceof Date ? t.scheduledAt.toISOString() : new Date(t.scheduledAt).toISOString(),
+    scheduledAt:
+      t.scheduledAt instanceof Date
+        ? t.scheduledAt.toISOString()
+        : new Date(t.scheduledAt).toISOString(),
     notificationId: t.notificationId,
     expReward: t.expReward,
-    createdAt: t.createdAt instanceof Date ? t.createdAt.toISOString() : new Date(t.createdAt).toISOString(),
-    updatedAt: t.updatedAt instanceof Date ? t.updatedAt.toISOString() : new Date(t.updatedAt).toISOString(),
+    createdAt:
+      t.createdAt instanceof Date
+        ? t.createdAt.toISOString()
+        : new Date(t.createdAt).toISOString(),
+    updatedAt:
+      t.updatedAt instanceof Date
+        ? t.updatedAt.toISOString()
+        : new Date(t.updatedAt).toISOString(),
   };
 }
 
-async function buildAuthoritativeState(filter?: TaskQueryFilter): Promise<GalaxyStateResponse> {
-  await ensureSeedData();
-
-  // Fetch all tasks to compute authoritative counts and global EXP
+async function buildAuthoritativeState(
+  userId: string,
+  filter?: TaskQueryFilter
+): Promise<GalaxyStateResponse> {
+  // Fetch strictly this authenticated user's tasks & notes from Supabase
   const allTasks = await prisma.task.findMany({
+    where: { userId },
     orderBy: { createdAt: "desc" },
   });
 
   const totalExp = allTasks.reduce(
-    (sum, t) => (t.status === "Done" ? sum + t.expReward : sum),
+    (sum, t) =>
+      t.category !== "Note" && t.status === "Done" ? sum + t.expReward : sum,
     0
   );
+
+  const nonNoteTasks = allTasks.filter((t) => t.category !== "Note");
 
   const counts = {
     All: allTasks.length,
@@ -98,11 +67,10 @@ async function buildAuthoritativeState(filter?: TaskQueryFilter): Promise<Galaxy
     Weekly: allTasks.filter((t) => t.category === "Weekly").length,
     Monthly: allTasks.filter((t) => t.category === "Monthly").length,
     Note: allTasks.filter((t) => t.category === "Note").length,
-    Completed: allTasks.filter((t) => t.status === "Done").length,
-    Total: allTasks.length,
+    Completed: nonNoteTasks.filter((t) => t.status === "Done").length,
+    Total: nonNoteTasks.length,
   };
 
-  // Build filtered list for the client view
   let filtered = allTasks;
 
   if (filter?.category && filter.category !== "All") {
@@ -130,17 +98,27 @@ async function buildAuthoritativeState(filter?: TaskQueryFilter): Promise<Galaxy
   };
 }
 
-export const taskStore = {
-  async getState(filter?: TaskQueryFilter): Promise<GalaxyStateResponse> {
-    return await buildAuthoritativeState(filter);
-  },
+async function syncUserTotalExp(userId: string, totalExp: number): Promise<void> {
+  await prisma.user
+    .update({
+      where: { id: userId },
+      data: { totalExp },
+    })
+    .catch(() => {
+      // Non-fatal if user was concurrently deleted
+    });
+}
 
-  async getTaskById(id: string): Promise<Task | null> {
-    const task = await prisma.task.findUnique({ where: { id } });
-    return task ? mapPrismaTask(task) : null;
+export const taskStore = {
+  async getState(
+    userId: string,
+    filter?: TaskQueryFilter
+  ): Promise<GalaxyStateResponse> {
+    return await buildAuthoritativeState(userId, filter);
   },
 
   async createTask(
+    userId: string,
     payload: CreateTaskPayload,
     filter?: TaskQueryFilter
   ): Promise<{ task: Task; state: GalaxyStateResponse }> {
@@ -154,10 +132,11 @@ export const taskStore = {
         status: "Pending",
         scheduledAt: new Date(payload.scheduledAt),
         expReward,
+        userId,
       },
     });
 
-    const state = await buildAuthoritativeState(filter);
+    const state = await buildAuthoritativeState(userId, filter);
     return {
       task: mapPrismaTask(created),
       state,
@@ -165,11 +144,12 @@ export const taskStore = {
   },
 
   async updateTask(
+    userId: string,
     id: string,
     payload: UpdateTaskPayload,
     filter?: TaskQueryFilter
   ): Promise<{ task: Task; state: GalaxyStateResponse }> {
-    const existing = await prisma.task.findUnique({ where: { id } });
+    const existing = await prisma.task.findFirst({ where: { id, userId } });
     if (!existing) {
       throw new Error("TASK_NOT_FOUND");
     }
@@ -195,7 +175,8 @@ export const taskStore = {
       },
     });
 
-    const state = await buildAuthoritativeState(filter);
+    const state = await buildAuthoritativeState(userId, filter);
+    await syncUserTotalExp(userId, state.progress.totalExp);
     return {
       task: mapPrismaTask(updated),
       state,
@@ -203,16 +184,19 @@ export const taskStore = {
   },
 
   async toggleTaskStatus(
+    userId: string,
     id: string,
     filter?: TaskQueryFilter
   ): Promise<{ task: Task; state: GalaxyStateResponse }> {
-    const existing = await prisma.task.findUnique({ where: { id } });
+    const existing = await prisma.task.findFirst({ where: { id, userId } });
     if (!existing) {
       throw new Error("TASK_NOT_FOUND");
     }
 
     const nextStatus = existing.status === "Pending" ? "Done" : "Pending";
-    const authoritativeReward = getAuthoritativeExpReward(existing.category as TaskCategory);
+    const authoritativeReward = getAuthoritativeExpReward(
+      existing.category as TaskCategory
+    );
 
     const updated = await prisma.task.update({
       where: { id },
@@ -223,7 +207,8 @@ export const taskStore = {
       },
     });
 
-    const state = await buildAuthoritativeState(filter);
+    const state = await buildAuthoritativeState(userId, filter);
+    await syncUserTotalExp(userId, state.progress.totalExp);
     return {
       task: mapPrismaTask(updated),
       state,
@@ -231,17 +216,19 @@ export const taskStore = {
   },
 
   async deleteTask(
+    userId: string,
     id: string,
     filter?: TaskQueryFilter
   ): Promise<{ deletedTask: Task; state: GalaxyStateResponse }> {
-    const existing = await prisma.task.findUnique({ where: { id } });
+    const existing = await prisma.task.findFirst({ where: { id, userId } });
     if (!existing) {
       throw new Error("TASK_NOT_FOUND");
     }
 
     await prisma.task.delete({ where: { id } });
 
-    const state = await buildAuthoritativeState(filter);
+    const state = await buildAuthoritativeState(userId, filter);
+    await syncUserTotalExp(userId, state.progress.totalExp);
     return {
       deletedTask: mapPrismaTask(existing),
       state,
