@@ -5,6 +5,10 @@ import { AuthenticatedRequest, requireAuth } from "../middleware/auth";
 
 const router = Router();
 
+const MAX_TITLE_LENGTH = 200;
+const MAX_DESCRIPTION_LENGTH = 50000;
+const MAX_NOTIFICATION_ID_LENGTH = 200;
+
 // All /api/tasks & notes routes require a valid authenticated user JWT
 router.use(requireAuth);
 
@@ -17,12 +21,21 @@ function extractFilter(req: AuthenticatedRequest): TaskQueryFilter {
   };
 }
 
+function extractLocalDate(req: AuthenticatedRequest): string | undefined {
+  const header = req.headers["x-local-date"];
+  return typeof header === "string" ? header : undefined;
+}
+
 // GET /api/tasks — Returns authenticated user's tasks, notes, counts, and RPG progress
 router.get(
   "/",
   async (req: AuthenticatedRequest, res: Response): Promise<void> => {
     try {
-      const state = await taskStore.getState(req.userId!, extractFilter(req));
+      const state = await taskStore.getState(
+        req.userId!,
+        extractFilter(req),
+        extractLocalDate(req)
+      );
       res.json(state);
     } catch (error) {
       console.error(
@@ -43,6 +56,23 @@ router.post(
 
       if (!title || typeof title !== "string" || !title.trim()) {
         res.status(400).json({ error: "Mission title is required." });
+        return;
+      }
+
+      if (title.trim().length > MAX_TITLE_LENGTH) {
+        res.status(400).json({
+          error: `Mission title must be at most ${MAX_TITLE_LENGTH} characters.`,
+        });
+        return;
+      }
+
+      if (
+        description !== undefined &&
+        (typeof description !== "string" || description.length > MAX_DESCRIPTION_LENGTH)
+      ) {
+        res.status(400).json({
+          error: `Description must be a string of at most ${MAX_DESCRIPTION_LENGTH} characters.`,
+        });
         return;
       }
 
@@ -79,7 +109,8 @@ router.post(
           category,
           scheduledAt: parsedSchedule.toISOString(),
         },
-        extractFilter(req)
+        extractFilter(req),
+        extractLocalDate(req)
       );
 
       res.status(201).json(result);
@@ -101,6 +132,33 @@ router.put(
 
       if (title !== undefined && (typeof title !== "string" || !title.trim())) {
         res.status(400).json({ error: "Title cannot be empty." });
+        return;
+      }
+
+      if (typeof title === "string" && title.trim().length > MAX_TITLE_LENGTH) {
+        res.status(400).json({
+          error: `Title must be at most ${MAX_TITLE_LENGTH} characters.`,
+        });
+        return;
+      }
+
+      if (
+        description !== undefined &&
+        (typeof description !== "string" || description.length > MAX_DESCRIPTION_LENGTH)
+      ) {
+        res.status(400).json({
+          error: `Description must be a string of at most ${MAX_DESCRIPTION_LENGTH} characters.`,
+        });
+        return;
+      }
+
+      if (
+        notificationId !== undefined &&
+        notificationId !== null &&
+        (typeof notificationId !== "string" ||
+          notificationId.length > MAX_NOTIFICATION_ID_LENGTH)
+      ) {
+        res.status(400).json({ error: "Invalid notificationId." });
         return;
       }
 
@@ -132,7 +190,8 @@ router.put(
           scheduledAt: normalizedSchedule,
           notificationId,
         },
-        extractFilter(req)
+        extractFilter(req),
+        extractLocalDate(req)
       );
 
       res.json(result);
@@ -156,7 +215,8 @@ router.patch(
       const result = await taskStore.toggleTaskStatus(
         req.userId!,
         id,
-        extractFilter(req)
+        extractFilter(req),
+        extractLocalDate(req)
       );
       res.json(result);
     } catch (error: unknown) {
@@ -177,11 +237,21 @@ router.patch(
     try {
       const id = String(req.params.id);
       const { notificationId } = req.body;
+      if (
+        notificationId !== undefined &&
+        notificationId !== null &&
+        (typeof notificationId !== "string" ||
+          notificationId.length > MAX_NOTIFICATION_ID_LENGTH)
+      ) {
+        res.status(400).json({ error: "Invalid notificationId." });
+        return;
+      }
       const result = await taskStore.updateTask(
         req.userId!,
         id,
         { notificationId: notificationId ?? null },
-        extractFilter(req)
+        extractFilter(req),
+        extractLocalDate(req)
       );
       res.json(result);
     } catch (error: unknown) {
@@ -204,7 +274,8 @@ router.delete(
       const result = await taskStore.deleteTask(
         req.userId!,
         id,
-        extractFilter(req)
+        extractFilter(req),
+        extractLocalDate(req)
       );
       res.json(result);
     } catch (error: unknown) {

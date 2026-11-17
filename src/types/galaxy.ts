@@ -32,6 +32,8 @@ export interface UpdateTaskPayload {
 
 export interface UserProgress {
   totalExp: number;
+  /** EXP earned from tasks completed today that will be added to totalExp at end of day */
+  pendingExp?: number;
   level: number;
   currentLevelExp: number;
   nextLevelCap: number;

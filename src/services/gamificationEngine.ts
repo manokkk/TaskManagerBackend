@@ -97,8 +97,12 @@ export function getAuthoritativeExpReward(category: TaskCategory): number {
  * Deterministically computes the complete UserProgress payload from cumulative `totalExp`
  * on the backend. The mobile frontend never calculates EXP, levels, or ranks locally.
  */
-export function calculateAuthoritativeProgress(rawTotalExp: number): UserProgress {
+export function calculateAuthoritativeProgress(
+  rawTotalExp: number,
+  rawPendingExp = 0
+): UserProgress {
   const totalExp = Math.max(0, Math.floor(rawTotalExp));
+  const pendingExp = Math.max(0, Math.floor(rawPendingExp));
   let level = 1;
   let remainingExp = totalExp;
   let currentCap = BASE_LEVEL_CAP;
@@ -116,6 +120,7 @@ export function calculateAuthoritativeProgress(rawTotalExp: number): UserProgres
 
   return {
     totalExp,
+    pendingExp,
     level,
     currentLevelExp: remainingExp,
     nextLevelCap: currentCap,

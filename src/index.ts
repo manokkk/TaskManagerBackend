@@ -22,20 +22,44 @@ const allowedOrigins = (process.env.CORS_ORIGIN || "")
   .map((o) => o.trim())
   .filter(Boolean);
 
+app.disable("x-powered-by");
 app.set("trust proxy", 1);
+
+app.use((_req: Request, res: Response, next) => {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("Referrer-Policy", "no-referrer");
+  res.setHeader("X-XSS-Protection", "0");
+  if (isProduction) {
+    res.setHeader(
+      "Strict-Transport-Security",
+      "max-age=31536000; includeSubDomains"
+    );
+  }
+  next();
+});
+
 app.use(
   cors(
     allowedOrigins.length > 0
       ? { origin: allowedOrigins, credentials: true }
-      : undefined
+      : isProduction
+        ? { origin: false }
+        : undefined
   )
 );
-app.use(express.json({ limit: "15mb" }));
+app.use(express.json({ limit: "2mb" }));
 
 const authRateLimit = createRateLimiter({
   windowMs: 15 * 60 * 1000,
   maxRequests: 25,
   message: "Too many authentication attempts. Please wait 15 minutes and try again.",
+});
+
+const apiRateLimit = createRateLimiter({
+  windowMs: 15 * 60 * 1000,
+  maxRequests: 300,
+  message: "Too many requests. Please slow down and try again shortly.",
 });
 
 // Health check endpoint (probes Supabase database connection)
@@ -61,10 +85,11 @@ app.get("/api/health", async (_req: Request, res: Response) => {
 // Auth Routes (Sign Up & Log In with Supabase)
 app.use("/api/auth/login", authRateLimit);
 app.use("/api/auth/register", authRateLimit);
+app.use("/api/auth/me", apiRateLimit);
 app.use("/api/auth", authRouter);
 
 // Authoritative Tasks & Gamification Engine API
-app.use("/api/tasks", tasksRouter);
+app.use("/api/tasks", apiRateLimit, tasksRouter);
 
 app.listen(PORT, HOST, () => {
   console.log(

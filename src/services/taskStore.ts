@@ -43,17 +43,140 @@ function mapPrismaTask(t: any): Task {
   };
 }
 
+function getUtcDateKey(date: Date = new Date()): string {
+  const year = date.getUTCFullYear();
+  const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(date.getUTCDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function normalizeDateKey(value?: string): string {
+  const now = new Date();
+  const serverUtcKey = getUtcDateKey(now);
+
+  if (typeof value !== "string") {
+    return serverUtcKey;
+  }
+
+  const trimmed = value.trim();
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(trimmed);
+  if (!match) {
+    return serverUtcKey;
+  }
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const candidateMs = Date.UTC(year, month - 1, day);
+  const check = new Date(candidateMs);
+
+  // Reject impossible calendar dates (e.g. 2026-02-31)
+  if (
+    check.getUTCFullYear() !== year ||
+    check.getUTCMonth() !== month - 1 ||
+    check.getUTCDate() !== day
+  ) {
+    return serverUtcKey;
+  }
+
+  // Clamp client-supplied local date to within +-1 day of server UTC date
+  // to cover all real-world timezones while preventing EOD EXP replay/farming.
+  const serverUtcMs = Date.UTC(
+    now.getUTCFullYear(),
+    now.getUTCMonth(),
+    now.getUTCDate()
+  );
+  const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+  if (Math.abs(candidateMs - serverUtcMs) > ONE_DAY_MS) {
+    return serverUtcKey;
+  }
+
+  return trimmed;
+}
+
+/**
+ * At the end of each calendar day, adds EXP from all tasks completed that day
+ * to User.totalExp, records lastSettledDate, and resets completed tasks to Pending.
+ */
+async function settleAndGetUserTotalExp(
+  userId: string,
+  todayKey: string
+): Promise<number> {
+  return prisma.$transaction(async (tx) => {
+    const user = await tx.user.findUnique({
+      where: { id: userId },
+      select: { totalExp: true, lastSettledDate: true },
+    });
+
+    if (!user) {
+      return 0;
+    }
+
+    if (!user.lastSettledDate) {
+      await tx.user.update({
+        where: { id: userId },
+        data: { lastSettledDate: todayKey },
+      });
+      return user.totalExp;
+    }
+
+    if (user.lastSettledDate >= todayKey) {
+      return user.totalExp;
+    }
+
+    const doneTasks = await tx.task.findMany({
+      where: {
+        userId,
+        category: { not: "Note" },
+        status: "Done",
+      },
+      select: { expReward: true },
+    });
+
+    const earnedExp = doneTasks.reduce((sum, t) => sum + t.expReward, 0);
+
+    const updatedUser = await tx.user.update({
+      where: { id: userId },
+      data: {
+        totalExp: { increment: earnedExp },
+        lastSettledDate: todayKey,
+      },
+      select: { totalExp: true },
+    });
+
+    if (doneTasks.length > 0) {
+      await tx.task.updateMany({
+        where: {
+          userId,
+          category: { not: "Note" },
+          status: "Done",
+        },
+        data: {
+          status: "Pending",
+          notificationId: null,
+        },
+      });
+    }
+
+    return updatedUser.totalExp;
+  });
+}
+
 async function buildAuthoritativeState(
   userId: string,
-  filter?: TaskQueryFilter
+  filter?: TaskQueryFilter,
+  localDateKey?: string
 ): Promise<GalaxyStateResponse> {
+  const todayKey = normalizeDateKey(localDateKey);
+  const settledTotalExp = await settleAndGetUserTotalExp(userId, todayKey);
+
   // Fetch strictly this authenticated user's tasks & notes from Supabase
   const allTasks = await prisma.task.findMany({
     where: { userId },
     orderBy: { createdAt: "desc" },
   });
 
-  const totalExp = allTasks.reduce(
+  const pendingExp = allTasks.reduce(
     (sum, t) =>
       t.category !== "Note" && t.status === "Done" ? sum + t.expReward : sum,
     0
@@ -93,34 +216,25 @@ async function buildAuthoritativeState(
   return {
     tasks: filtered.map(mapPrismaTask),
     counts,
-    progress: calculateAuthoritativeProgress(totalExp),
+    progress: calculateAuthoritativeProgress(settledTotalExp, pendingExp),
     metadata: getGamificationMetadata(),
   };
-}
-
-async function syncUserTotalExp(userId: string, totalExp: number): Promise<void> {
-  await prisma.user
-    .update({
-      where: { id: userId },
-      data: { totalExp },
-    })
-    .catch(() => {
-      // Non-fatal if user was concurrently deleted
-    });
 }
 
 export const taskStore = {
   async getState(
     userId: string,
-    filter?: TaskQueryFilter
+    filter?: TaskQueryFilter,
+    localDateKey?: string
   ): Promise<GalaxyStateResponse> {
-    return await buildAuthoritativeState(userId, filter);
+    return await buildAuthoritativeState(userId, filter, localDateKey);
   },
 
   async createTask(
     userId: string,
     payload: CreateTaskPayload,
-    filter?: TaskQueryFilter
+    filter?: TaskQueryFilter,
+    localDateKey?: string
   ): Promise<{ task: Task; state: GalaxyStateResponse }> {
     const expReward = getAuthoritativeExpReward(payload.category);
 
@@ -136,7 +250,7 @@ export const taskStore = {
       },
     });
 
-    const state = await buildAuthoritativeState(userId, filter);
+    const state = await buildAuthoritativeState(userId, filter, localDateKey);
     return {
       task: mapPrismaTask(created),
       state,
@@ -147,7 +261,8 @@ export const taskStore = {
     userId: string,
     id: string,
     payload: UpdateTaskPayload,
-    filter?: TaskQueryFilter
+    filter?: TaskQueryFilter,
+    localDateKey?: string
   ): Promise<{ task: Task; state: GalaxyStateResponse }> {
     const existing = await prisma.task.findFirst({ where: { id, userId } });
     if (!existing) {
@@ -175,8 +290,7 @@ export const taskStore = {
       },
     });
 
-    const state = await buildAuthoritativeState(userId, filter);
-    await syncUserTotalExp(userId, state.progress.totalExp);
+    const state = await buildAuthoritativeState(userId, filter, localDateKey);
     return {
       task: mapPrismaTask(updated),
       state,
@@ -186,7 +300,8 @@ export const taskStore = {
   async toggleTaskStatus(
     userId: string,
     id: string,
-    filter?: TaskQueryFilter
+    filter?: TaskQueryFilter,
+    localDateKey?: string
   ): Promise<{ task: Task; state: GalaxyStateResponse }> {
     const existing = await prisma.task.findFirst({ where: { id, userId } });
     if (!existing) {
@@ -207,8 +322,7 @@ export const taskStore = {
       },
     });
 
-    const state = await buildAuthoritativeState(userId, filter);
-    await syncUserTotalExp(userId, state.progress.totalExp);
+    const state = await buildAuthoritativeState(userId, filter, localDateKey);
     return {
       task: mapPrismaTask(updated),
       state,
@@ -218,7 +332,8 @@ export const taskStore = {
   async deleteTask(
     userId: string,
     id: string,
-    filter?: TaskQueryFilter
+    filter?: TaskQueryFilter,
+    localDateKey?: string
   ): Promise<{ deletedTask: Task; state: GalaxyStateResponse }> {
     const existing = await prisma.task.findFirst({ where: { id, userId } });
     if (!existing) {
@@ -227,8 +342,7 @@ export const taskStore = {
 
     await prisma.task.delete({ where: { id } });
 
-    const state = await buildAuthoritativeState(userId, filter);
-    await syncUserTotalExp(userId, state.progress.totalExp);
+    const state = await buildAuthoritativeState(userId, filter, localDateKey);
     return {
       deletedTask: mapPrismaTask(existing),
       state,

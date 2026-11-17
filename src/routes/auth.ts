@@ -2,7 +2,11 @@ import { Router, Request, Response } from "express";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { prisma } from "../prisma";
-import { getJwtSecret } from "../middleware/auth";
+import {
+  AuthenticatedRequest,
+  getJwtSecret,
+  requireAuth,
+} from "../middleware/auth";
 
 const router = Router();
 
@@ -129,38 +133,33 @@ router.post("/login", async (req: Request, res: Response): Promise<void> => {
 });
 
 // GET /api/auth/me — Retrieve current Commander profile from Supabase
-router.get("/me", async (req: Request, res: Response): Promise<void> => {
-  try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      res.status(401).json({ error: "Missing or invalid authorization token." });
-      return;
+router.get(
+  "/me",
+  requireAuth,
+  async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+    try {
+      const user = await prisma.user.findUnique({
+        where: { id: req.userId! },
+        select: {
+          id: true,
+          email: true,
+          username: true,
+          totalExp: true,
+          createdAt: true,
+        },
+      });
+
+      if (!user) {
+        res.status(404).json({ error: "Commander profile not found in Supabase." });
+        return;
+      }
+
+      res.json({ user });
+    } catch {
+      res.status(500).json({ error: "Failed to load Commander profile." });
     }
-
-    const token = authHeader.split(" ")[1];
-    const decoded = jwt.verify(token, getJwtSecret()) as { userId: string };
-
-    const user = await prisma.user.findUnique({
-      where: { id: decoded.userId },
-      select: {
-        id: true,
-        email: true,
-        username: true,
-        totalExp: true,
-        createdAt: true,
-      },
-    });
-
-    if (!user) {
-      res.status(404).json({ error: "Commander profile not found in Supabase." });
-      return;
-    }
-
-    res.json({ user });
-  } catch {
-    res.status(401).json({ error: "Expired or invalid session token." });
   }
-});
+);
 
 export default router;
 

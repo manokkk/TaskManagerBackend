@@ -32,7 +32,13 @@ export function createRateLimiter(options: {
         }
       }
       if (buckets.size >= MAX_TRACKED_IPS) {
-        buckets.clear();
+        const evictCount = Math.ceil(MAX_TRACKED_IPS * 0.1);
+        let removed = 0;
+        for (const k of buckets.keys()) {
+          buckets.delete(k);
+          removed += 1;
+          if (removed >= evictCount) break;
+        }
       }
     }
 
