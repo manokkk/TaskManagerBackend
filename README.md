@@ -1,6 +1,6 @@
-# Task Manager Backend
+# NoteQuest Backend
 
-Express + TypeScript + Prisma SQLite REST API for the Task Manager application.
+Express + TypeScript + Prisma PostgreSQL REST API for the NoteQuest application.
 
 ## Endpoints
 

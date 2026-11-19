@@ -1,7 +1,7 @@
 {
   "name": "task-manager-backend",
   "version": "1.0.0",
-  "description": "Task Manager Express + TypeScript + Prisma SQLite Backend",
+  "description": "NoteQuest Express + TypeScript + Prisma PostgreSQL Backend",
   "main": "dist/index.js",
   "scripts": {
     "dev": "tsx watch src/index.ts",

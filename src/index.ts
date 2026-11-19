@@ -77,7 +77,7 @@ app.get("/api/health", async (_req: Request, res: Response) => {
   res.status(healthy ? 200 : 503).json({
     status: healthy ? "ok" : "degraded",
     database,
-    engine: "Galaxy RPG Authoritative Backend",
+    engine: "NoteQuest Authoritative Backend",
     timestamp: new Date().toISOString(),
   });
 });
@@ -93,7 +93,7 @@ app.use("/api/tasks", apiRateLimit, tasksRouter);
 
 app.listen(PORT, HOST, () => {
   console.log(
-    `🚀 Galaxy RPG Backend running on port ${PORT} (${isProduction ? "production" : "development"})`
+    `🚀 NoteQuest Backend running on port ${PORT} (${isProduction ? "production" : "development"})`
   );
   if (!isProduction) {
     console.log(`📡 Local: http://localhost:${PORT}/api/health`);
